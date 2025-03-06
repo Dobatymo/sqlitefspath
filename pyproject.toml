@@ -1,0 +1,47 @@
+[build-system]
+build-backend = "flit_core.buildapi"
+
+requires = [
+  "flit-core>=3.11,<4",
+]
+
+[project]
+name = "sqlitepath"
+license = "MIT"
+license-files = [ "LICENSE" ]
+authors = [ { name = "Dobatymo", email = "Dobatymo@users.noreply.github.com" } ]
+requires-python = ">=3.8"
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dynamic = [
+  "description",
+  "version",
+]
+
+[tool.ruff]
+line-length = 120
+lint.extend-select = [
+  "B",
+  "I",
+]
+
+[tool.mypy]
+allow_redefinition = true
+ignore_missing_imports = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_configs = true
+warn_unused_ignores = true
+warn_unreachable = true
+strict_equality = true
+
+[tool.bandit]
+skips = [
+  "B101",
+]
