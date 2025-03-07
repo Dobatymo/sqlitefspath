@@ -2,12 +2,136 @@ import os
 import sqlite3
 import sys
 from contextlib import contextmanager
+from itertools import chain
 from typing import Iterator, List, Optional, Tuple, Union
+
+from typing_extensions import Self
 
 ROOT_ID = 1
 
 
-class SqlitePath:
+class SqlitePurePath:
+    __slots__ = ("segments",)
+
+    def __init__(self, *pathsegments: str) -> None:
+        if pathsegments == ("",):
+            self.segments = []
+        else:
+            self.segments = list(chain.from_iterable(segment.split("/") for segment in pathsegments))
+
+    def __hash__(self) -> int:
+        return hash(self.segments)
+
+    def __eq__(self, other) -> bool:
+        return self.segments == other.segments
+
+    def __lt__(self, other) -> bool:
+        return self.segments < other.segments
+
+    # Operators
+
+    def __truediv__(self, other) -> Self:
+        return self.joinpath(other)
+
+    def __rtruediv__(self, other) -> Self:
+        return self.with_segments(other, *self.segments)
+
+    # Accessing individual parts
+
+    @property
+    def parts(self) -> Tuple[str, ...]:
+        raise NotImplementedError
+
+    # Methods and properties
+
+    @property
+    def parser(self):
+        raise NotImplementedError
+
+    @property
+    def drive(self) -> str:
+        return ""
+
+    @property
+    def root(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def anchor(self) -> str:
+        return self.drive + self.root
+
+    @property
+    def parents(self) -> Tuple[str, ...]:
+        raise NotImplementedError
+
+    @property
+    def parent(self) -> Self:
+        return self.with_segments(*self.segments[:-1])
+
+    @property
+    def name(self) -> str:
+        if self.segments:
+            return self.segments[-1]
+        else:
+            return ""
+
+    @property
+    def suffix(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def suffixes(self) -> List[str]:
+        raise NotImplementedError
+
+    @property
+    def stem(self) -> str:
+        raise NotImplementedError
+
+    def as_posix(self) -> str:
+        raise NotImplementedError
+
+    def is_absolute(self) -> bool:
+        raise NotImplementedError
+
+    def is_relative_to(self, other) -> bool:
+        raise NotImplementedError
+
+    def is_reserved(self) -> bool:
+        raise NotImplementedError
+
+    def joinpath(self, *pathsegments: str) -> Self:
+        return self.with_segments(*self.segments, *pathsegments)
+
+    def full_match(self, pattern: str, *, case_sensitive: Optional[bool] = None) -> bool:
+        raise NotImplementedError
+
+    def match(self, pattern: str, *, case_sensitive: Optional[bool] = None) -> bool:
+        raise NotImplementedError
+
+    def relative_to(self, other, walk_up: bool = False) -> Self:
+        raise NotImplementedError
+
+    def with_name(self, name: str) -> Self:
+        return self.with_segments(*self.segments[:-1], name)
+
+    def with_stem(self, stem: str) -> Self:
+        raise NotImplementedError
+
+    def with_suffix(self, suffix: str) -> Self:
+        raise NotImplementedError
+
+    def with_segments(self, *pathsegments: str) -> Self:
+        return type(self)(*pathsegments)
+
+
+class SqlitePath(SqlitePurePath):
+    __slots__ = ("conn", "parent_id", "_node_id", "_file_id")
+
+    def with_segments(self, *pathsegments: str) -> Self:
+        return type(self)(self.conn, *pathsegments)
+
+    # internal helpers
+
     def _find_node(self, parent_id: Optional[int], segment: str) -> Tuple[int, int]:
         if parent_id is None:
             cur = self.conn.execute(
@@ -24,6 +148,13 @@ class SqlitePath:
             raise FileNotFoundError(segment)
         node_id, file_id = res
         return node_id, file_id
+
+    def _get_file_id(self) -> Optional[int]:
+        parent_id = self.parent_id
+        for segment in self.segments:
+            node_id, file_id = self._find_node(parent_id, segment)
+            parent_id = node_id
+        return file_id
 
     def _insert_directory(self, segment: str, parent_id: int) -> int:
         sql_insert = "INSERT INTO fs (name, parent_id, file_id) VALUES (?, ?, ?) RETURNING rowid"
@@ -51,6 +182,30 @@ class SqlitePath:
         (rowid,) = result
         return rowid
 
+    def _read_file_id(self, file_id: int) -> bytes:
+        sql = "SELECT data FROM data WHERE file_id = ?"
+        cur = self.conn.execute(sql, (file_id,))
+        result = cur.fetchone()
+        assert result is not None
+        (data,) = result
+        return data
+
+    def _read_file_existing(self, segment: str, parent_id: int) -> Tuple[bytes, int]:
+        sql = "SELECT file_id FROM fs WHERE name = ? and parent_id = ?"
+        cur = self.conn.execute(sql, (segment, parent_id))
+        result = cur.fetchone()
+
+        if result is None:
+            raise FileNotFoundError(segment)
+
+        (file_id,) = result
+
+        if file_id is None:
+            raise PermissionError(f"{segment} is a directory")
+
+        data = self._read_file_id(file_id)
+        return data, file_id
+
     def _insert_file_overwrite(self, segment: str, parent_id: int, data: bytes) -> None:
         sql = "SELECT file_id FROM fs WHERE name = ? and parent_id = ?"
         cur = self.conn.execute(sql, (segment, parent_id))
@@ -73,18 +228,33 @@ class SqlitePath:
             sql = "UPDATE data SET data = ? WHERE file_id = ?"
             self.conn.execute(sql, (data, file_id))
 
+    # methods
+
     def __init__(self, conn: sqlite3.Connection, *pathsegments: str) -> None:
-        assert len(pathsegments) == 1
+        super().__init__(*pathsegments)
         self.conn = conn
-        self.segments = pathsegments[0].split("/")
+
         self.parent_id = ROOT_ID
-        self.debug = False
+        self._node_id: Optional[int] = None
+        self._file_id: Optional[int] = None
 
     def __str__(self) -> str:
         return "/".join(self.segments)
 
     def __repr__(self) -> str:
         return f"SqlitePath({repr(str(self))})"
+
+    def __eq__(self, other) -> bool:
+        return self.segments == other.segments and self.parent_id == other.parent_id
+
+    @classmethod
+    def with_meta(
+        self, conn: sqlite3.Connection, *pathsegments: str, node_id: Optional[int] = None, file_id: Optional[int] = None
+    ) -> "SqlitePath":
+        path = SqlitePath(conn, *pathsegments)
+        path._node_id = node_id
+        path._file_id = file_id
+        return path
 
     # Parsing and generating URIs
 
@@ -126,34 +296,36 @@ class SqlitePath:
         raise NotImplementedError
 
     def exists(self, *, follow_symlinks: bool = True) -> bool:
-        parent_id = self.parent_id
         try:
-            for segment in self.segments:
-                node_id, file_id = self._find_node(parent_id, segment)
-                parent_id = node_id
-            return True
+            self._get_file_id()
         except FileNotFoundError:
             return False
+
+        return True
 
     def is_file(self, *, follow_symlinks: bool = True) -> bool:
-        parent_id = self.parent_id
-        try:
-            for segment in self.segments:
-                node_id, file_id = self._find_node(parent_id, segment)
-                parent_id = node_id
-            return file_id is not None
-        except FileNotFoundError:
-            return False
+        if self._file_id is None:
+            try:
+                file_id = self._get_file_id()
+            except FileNotFoundError:
+                return False
+            self._file_id = file_id
+        else:
+            file_id = self._file_id
+
+        return file_id is not None
 
     def is_dir(self, *, follow_symlinks: bool = True) -> bool:
-        parent_id = self.parent_id
-        try:
-            for segment in self.segments:
-                node_id, file_id = self._find_node(parent_id, segment)
-                parent_id = node_id
-            return file_id is None
-        except FileNotFoundError:
-            return False
+        if self._file_id is None:
+            try:
+                file_id = self._get_file_id()
+            except FileNotFoundError:
+                return False
+            self._file_id = file_id
+        else:
+            file_id = self._file_id
+
+        return file_id is None
 
     def is_symlink(self) -> bool:
         return False
@@ -190,7 +362,7 @@ class SqlitePath:
         errors: Optional[str] = None,
         newline: Optional[str] = None,
     ) -> "sqlite3.Blob":
-        if sys.version < (3, 11):
+        if sys.version_info < (3, 11):
             raise NotImplementedError
 
         parent_id = self.parent_id
@@ -213,7 +385,19 @@ class SqlitePath:
         raise NotImplementedError
 
     def read_bytes(self) -> bytes:
-        raise NotImplementedError
+        if self._file_id is None:
+            parent_id = self.parent_id
+
+            for segment in self.segments[:-1]:
+                parent_id = self._select_directory(segment, parent_id)
+
+            segment = self.segments[-1]
+            data, file_id = self._read_file_existing(segment, parent_id)
+            self._file_id = file_id
+        else:
+            data = self._read_file_id(self._file_id)
+
+        return data
 
     def write_text(
         self, data: str, encoding: Optional[str] = None, errors: Optional[str] = None, newline: Optional[str] = None
@@ -233,7 +417,15 @@ class SqlitePath:
     # Reading directories
 
     def iterdir(self) -> "Iterator[SqlitePath]":
-        raise NotImplementedError
+        parent_id = self.parent_id
+
+        for segment in self.segments:
+            parent_id = self._select_directory(segment, parent_id)
+
+        sql = "SELECT id, name, file_id FROM fs WHERE parent_id = ?"
+        cur = self.conn.execute(sql, (parent_id,))
+        for node_id, name, file_id in cur:
+            yield SqlitePath.with_meta(self.conn, *self.segments, name, node_id=node_id, file_id=file_id)
 
     def glob(self, pattern, *, case_sensitive: bool = None, recurse_symlinks: bool = False) -> "Iterator[SqlitePath]":
         raise NotImplementedError
@@ -307,6 +499,8 @@ class SqlitePath:
 
 class SqliteConnect:
     def __init__(self, database: str, **kwargs) -> None:
+        sqlite_version = tuple(map(int, sqlite3.sqlite_version.split(".")))
+
         self.conn = sqlite3.connect(database, **kwargs)
         self.clear()
         sql = """CREATE TABLE IF NOT EXISTS fs (
@@ -317,6 +511,9 @@ class SqliteConnect:
     FOREIGN KEY (parent_id) REFERENCES files(id)
     UNIQUE(name, parent_id)
 )"""
+        if sqlite_version >= (3, 37, 0):
+            sql += " STRICT"
+
         self.conn.execute(sql)
         cur = self.conn.execute(
             "INSERT INTO fs (id, name, parent_id) VALUES (?, ?, ?) RETURNING rowid",
@@ -331,6 +528,9 @@ class SqliteConnect:
     data BLOB,
     FOREIGN KEY (file_id) REFERENCES files(file_id)
 )"""
+        if sqlite_version >= (3, 37, 0):
+            sql += " STRICT"
+
         self.conn.execute(sql)
         self.conn.commit()
 
