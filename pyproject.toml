@@ -6,7 +6,7 @@ requires = [
 ]
 
 [project]
-name = "sqlitepath"
+name = "sqlitefspath"
 description = "A pathlib compatible implementation of a filesystem stored in a SQLite database."
 readme = "readme.md"
 license = "MIT"
@@ -27,7 +27,7 @@ dynamic = [
 dependencies = [
   "typing-extensions>=4",
 ]
-urls.Homepage = "https://github.com/Dobatymo/sqlitepath"
+urls.Homepage = "https://github.com/Dobatymo/sqlitefspath"
 
 [tool.ruff]
 line-length = 120

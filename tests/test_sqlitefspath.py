@@ -1,7 +1,7 @@
 from typing import Callable
 from unittest import TestCase
 
-from sqlitepath.sqlitepath import SqliteConnect, SqlitePurePath
+from sqlitefspath.sqlitefspath import SqliteConnect, SqliteFsPurePath
 
 
 def skip_not_implemented(func: Callable) -> Callable:
@@ -14,60 +14,60 @@ def skip_not_implemented(func: Callable) -> Callable:
     return inner
 
 
-class SqlitePurePathTest(TestCase):
+class SqliteFsPurePathTest(TestCase):
     def test_parent(self):
-        p = SqlitePurePath("").parent
-        truth = SqlitePurePath("")
+        p = SqliteFsPurePath("").parent
+        truth = SqliteFsPurePath("")
         self.assertEqual(p, truth)
 
-        p = SqlitePurePath("asd").parent
-        truth = SqlitePurePath("")
+        p = SqliteFsPurePath("asd").parent
+        truth = SqliteFsPurePath("")
         self.assertEqual(p, truth)
 
-        p = SqlitePurePath("asd", "qwe").parent
-        truth = SqlitePurePath("asd")
+        p = SqliteFsPurePath("asd", "qwe").parent
+        truth = SqliteFsPurePath("asd")
         self.assertEqual(p, truth)
 
     def test_name(self):
-        p = SqlitePurePath().name
+        p = SqliteFsPurePath().name
         truth = ""
         self.assertEqual(p, truth)
 
-        p = SqlitePurePath("").name
+        p = SqliteFsPurePath("").name
         truth = ""
         self.assertEqual(p, truth)
 
-        p = SqlitePurePath("asd").name
+        p = SqliteFsPurePath("asd").name
         truth = "asd"
         self.assertEqual(p, truth)
 
-        p = SqlitePurePath("asd", "qwe").name
+        p = SqliteFsPurePath("asd", "qwe").name
         truth = "qwe"
         self.assertEqual(p, truth)
 
     def test_with_name(self):
-        p = SqlitePurePath().with_name("asd")
-        truth = SqlitePurePath("asd")
+        p = SqliteFsPurePath().with_name("asd")
+        truth = SqliteFsPurePath("asd")
         self.assertEqual(p, truth)
 
-        p = SqlitePurePath("").with_name("asd")
-        truth = SqlitePurePath("asd")
+        p = SqliteFsPurePath("").with_name("asd")
+        truth = SqliteFsPurePath("asd")
         self.assertEqual(p, truth)
 
-        p = SqlitePurePath("asd").with_name("asd")
-        truth = SqlitePurePath("asd")
+        p = SqliteFsPurePath("asd").with_name("asd")
+        truth = SqliteFsPurePath("asd")
         self.assertEqual(p, truth)
 
-        p = SqlitePurePath("asd", "qwe").with_name("zxc")
-        truth = SqlitePurePath("asd", "zxc")
+        p = SqliteFsPurePath("asd", "qwe").with_name("zxc")
+        truth = SqliteFsPurePath("asd", "zxc")
         self.assertEqual(p, truth)
 
 
-class SqlitePathTest(TestCase):
+class SqliteFsPathTest(TestCase):
     def test_repr(self):
         with SqliteConnect(":memory:") as sqlite:
             p = sqlite.Path("s1-1")
-            self.assertEqual("SqlitePath('s1-1')", repr(p))
+            self.assertEqual("SqliteFsPath('s1-1')", repr(p))
 
     def test_mkdir_is_file_dir(self):
         with SqliteConnect(":memory:") as sqlite:

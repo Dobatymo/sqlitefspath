@@ -10,7 +10,7 @@ from typing_extensions import Self
 ROOT_ID = 1
 
 
-class SqlitePurePath:
+class SqliteFsPurePath:
     __slots__ = ("segments",)
 
     def __init__(self, *pathsegments: str) -> None:
@@ -124,7 +124,7 @@ class SqlitePurePath:
         return type(self)(*pathsegments)
 
 
-class SqlitePath(SqlitePurePath):
+class SqliteFsPath(SqliteFsPurePath):
     __slots__ = ("conn", "parent_id", "_node_id", "_file_id")
 
     def with_segments(self, *pathsegments: str) -> Self:
@@ -242,7 +242,7 @@ class SqlitePath(SqlitePurePath):
         return "/".join(self.segments)
 
     def __repr__(self) -> str:
-        return f"SqlitePath({repr(str(self))})"
+        return f"SqliteFsPath({repr(str(self))})"
 
     def __eq__(self, other) -> bool:
         return self.segments == other.segments and self.parent_id == other.parent_id
@@ -250,8 +250,8 @@ class SqlitePath(SqlitePurePath):
     @classmethod
     def with_meta(
         self, conn: sqlite3.Connection, *pathsegments: str, node_id: Optional[int] = None, file_id: Optional[int] = None
-    ) -> "SqlitePath":
-        path = SqlitePath(conn, *pathsegments)
+    ) -> "SqliteFsPath":
+        path = SqliteFsPath(conn, *pathsegments)
         path._node_id = node_id
         path._file_id = file_id
         return path
@@ -259,7 +259,7 @@ class SqlitePath(SqlitePurePath):
     # Parsing and generating URIs
 
     @classmethod
-    def from_uri(cls, uri: str) -> "SqlitePath":
+    def from_uri(cls, uri: str) -> "SqliteFsPath":
         raise NotImplementedError
 
     def as_uri(self) -> str:
@@ -268,23 +268,23 @@ class SqlitePath(SqlitePurePath):
     # Expanding and resolving paths
 
     @classmethod
-    def home(cls) -> "SqlitePath":
+    def home(cls) -> "SqliteFsPath":
         raise NotImplementedError
 
-    def expanduser(self) -> "SqlitePath":
+    def expanduser(self) -> "SqliteFsPath":
         raise NotImplementedError
 
     @classmethod
-    def cwd(cls) -> "SqlitePath":
+    def cwd(cls) -> "SqliteFsPath":
         raise NotImplementedError
 
-    def absolute(self) -> "SqlitePath":
+    def absolute(self) -> "SqliteFsPath":
         raise NotImplementedError
 
-    def resolve(self, strict: bool = False) -> "SqlitePath":
+    def resolve(self, strict: bool = False) -> "SqliteFsPath":
         raise NotImplementedError
 
-    def readlink(self) -> "SqlitePath":
+    def readlink(self) -> "SqliteFsPath":
         raise NotImplementedError
 
     # Querying file type and status
@@ -348,7 +348,7 @@ class SqlitePath(SqlitePurePath):
     def is_char_device(self) -> bool:
         return False
 
-    def samefile(self, other_path: "Union[str, SqlitePath]") -> bool:
+    def samefile(self, other_path: "Union[str, SqliteFsPath]") -> bool:
         raise NotImplementedError
 
     # Reading and writing files
@@ -416,7 +416,7 @@ class SqlitePath(SqlitePurePath):
 
     # Reading directories
 
-    def iterdir(self) -> "Iterator[SqlitePath]":
+    def iterdir(self) -> "Iterator[SqliteFsPath]":
         parent_id = self.parent_id
 
         for segment in self.segments:
@@ -425,17 +425,19 @@ class SqlitePath(SqlitePurePath):
         sql = "SELECT id, name, file_id FROM fs WHERE parent_id = ?"
         cur = self.conn.execute(sql, (parent_id,))
         for node_id, name, file_id in cur:
-            yield SqlitePath.with_meta(self.conn, *self.segments, name, node_id=node_id, file_id=file_id)
+            yield SqliteFsPath.with_meta(self.conn, *self.segments, name, node_id=node_id, file_id=file_id)
 
-    def glob(self, pattern, *, case_sensitive: bool = None, recurse_symlinks: bool = False) -> "Iterator[SqlitePath]":
+    def glob(self, pattern, *, case_sensitive: bool = None, recurse_symlinks: bool = False) -> "Iterator[SqliteFsPath]":
         raise NotImplementedError
 
-    def rglob(self, pattern, *, case_sensitive: bool = None, recurse_symlinks: bool = False) -> "Iterator[SqlitePath]":
+    def rglob(
+        self, pattern, *, case_sensitive: bool = None, recurse_symlinks: bool = False
+    ) -> "Iterator[SqliteFsPath]":
         raise NotImplementedError
 
     def walk(
         self, top_down=True, on_error=None, follow_symlinks: bool = False
-    ) -> "Iterator[Tuple[SqlitePath, List[str], List[str]]]":
+    ) -> "Iterator[Tuple[SqliteFsPath, List[str], List[str]]]":
         raise NotImplementedError
 
     # Creating files and directories
@@ -470,10 +472,10 @@ class SqlitePath(SqlitePurePath):
 
     # Renaming and deleting
 
-    def rename(self, target: "Union[str, SqlitePath]") -> "SqlitePath":
+    def rename(self, target: "Union[str, SqliteFsPath]") -> "SqliteFsPath":
         raise NotImplementedError
 
-    def replace(self, target: "Union[str, SqlitePath]") -> "SqlitePath":
+    def replace(self, target: "Union[str, SqliteFsPath]") -> "SqliteFsPath":
         raise NotImplementedError
 
     def unlink(self, missing_ok: bool = False) -> None:
@@ -565,5 +567,5 @@ class SqliteConnect:
             if e.args[0] not in ("no such table: data", "no such table: fs"):
                 raise
 
-    def Path(self, *pathsegments: str) -> SqlitePath:
-        return SqlitePath(self.conn, *pathsegments)
+    def Path(self, *pathsegments: str) -> SqliteFsPath:
+        return SqliteFsPath(self.conn, *pathsegments)
