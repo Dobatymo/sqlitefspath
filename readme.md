@@ -1,6 +1,6 @@
 # sqlitepath
 
-A `pathlib` implementation of a filesystem stored in a SQLite database. Not to be confused with `sqlite-path` which is a SQLite extension.
+A `pathlib` compatible implementation of a filesystem stored in a SQLite database. Not to be confused with `sqlite-path` which is a SQLite extension.
 
 ## Install
 

@@ -7,6 +7,8 @@ requires = [
 
 [project]
 name = "sqlitepath"
+description = "A pathlib compatible implementation of a filesystem stored in a SQLite database."
+readme = "readme.md"
 license = "MIT"
 license-files = [ "LICENSE" ]
 authors = [ { name = "Dobatymo", email = "Dobatymo@users.noreply.github.com" } ]
@@ -20,9 +22,12 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
 ]
 dynamic = [
-  "description",
   "version",
 ]
+dependencies = [
+  "typing-extensions>=4",
+]
+urls.Homepage = "https://github.com/Dobatymo/sqlitepath"
 
 [tool.ruff]
 line-length = 120

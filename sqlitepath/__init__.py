@@ -1,3 +1,3 @@
-"""Filesystem in Sqlite based on pathlib"""
+"""A `pathlib` compatible implementation of a filesystem stored in a SQLite database."""
 
-__version__ = "0.0.1"
+__version__ = "0.0.1a1"

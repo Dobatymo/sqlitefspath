@@ -501,6 +501,9 @@ class SqliteConnect:
     def __init__(self, database: str, **kwargs) -> None:
         sqlite_version = tuple(map(int, sqlite3.sqlite_version.split(".")))
 
+        if sqlite_version < (3, 35, 0):
+            raise RuntimeError("SQLite version 3.35.0 or higher is required")
+
         self.conn = sqlite3.connect(database, **kwargs)
         self.clear()
         sql = """CREATE TABLE IF NOT EXISTS fs (
