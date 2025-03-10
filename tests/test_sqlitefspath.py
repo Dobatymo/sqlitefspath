@@ -1,7 +1,12 @@
+import os
+import shutil
+from pathlib import Path, PurePosixPath
 from typing import Callable
 from unittest import TestCase
 
 from sqlitefspath.sqlitefspath import SqliteConnect, SqliteFsPurePath
+
+USE_PATHLIB = False
 
 
 def skip_not_implemented(func: Callable) -> Callable:
@@ -14,63 +19,330 @@ def skip_not_implemented(func: Callable) -> Callable:
     return inner
 
 
+class PathlibPath(Path):
+    def __repr__(self):
+        return f"PathlibPath('{self}')"
+
+
+class PathlibBase:
+    def __init__(self, basepath: str):
+        self.base = Path(basepath)
+
+    def Path(self, *segments: str):
+        return PathlibPath(*segments)
+
+    def __len__(self):
+        total = 0
+        for _root, dirs, files in Path().walk():
+            total += len(dirs)
+            total += len(files)
+        return total
+
+    def __enter__(self):
+        assert not self.base.exists()
+        self.base.mkdir()
+        self.cwd = os.getcwd()
+        os.chdir(self.base)
+        return self
+
+    def __exit__(self, *args):
+        os.chdir(self.cwd)
+        shutil.rmtree(self.base)
+
+
+def PurePath(*args, **kwargs):
+    if USE_PATHLIB:
+        return PurePosixPath(*args)
+    else:
+        return SqliteFsPurePath(*args)
+
+
+def PathFactory():
+    if USE_PATHLIB:
+        return PathlibBase("tmp")
+    else:
+        return SqliteConnect(":memory:")
+
+
 class SqliteFsPurePathTest(TestCase):
+    def test_eq(self):
+        p1 = PurePath("")
+        p2 = PurePath("")
+        self.assertEqual(p1, p2)
+
+        p1 = PurePath("asd/qwe")
+        p2 = PurePath("asd/qwe")
+        self.assertEqual(p1, p2)
+
+        p1 = PurePath("asd")
+        p2 = PurePath("asd/")
+        self.assertEqual(p1, p2)
+
+        p1 = PurePath("asd/qwe")
+        p2 = PurePath("asd//qwe")
+        self.assertEqual(p1, p2)
+
+        p1 = PurePath("asd/qwe/zxc")
+        p2 = PurePath("asd", "qwe//", "zxc/")
+        self.assertEqual(p1, p2)
+
+        p1 = PurePath("asd")
+        p2 = PurePath("qwe")
+        self.assertNotEqual(p1, p2)
+
     def test_parent(self):
-        p = SqliteFsPurePath("").parent
-        truth = SqliteFsPurePath("")
+        p = PurePath("").parent
+        truth = PurePath("")
         self.assertEqual(p, truth)
 
-        p = SqliteFsPurePath("asd").parent
-        truth = SqliteFsPurePath("")
+        p = PurePath("asd").parent
+        truth = PurePath("")
         self.assertEqual(p, truth)
 
-        p = SqliteFsPurePath("asd", "qwe").parent
-        truth = SqliteFsPurePath("asd")
+        p = PurePath("asd", "qwe").parent
+        truth = PurePath("asd")
         self.assertEqual(p, truth)
 
     def test_name(self):
-        p = SqliteFsPurePath().name
+        p = PurePath().name
         truth = ""
         self.assertEqual(p, truth)
 
-        p = SqliteFsPurePath("").name
+        p = PurePath("").name
         truth = ""
         self.assertEqual(p, truth)
 
-        p = SqliteFsPurePath("asd").name
+        p = PurePath("asd").name
         truth = "asd"
         self.assertEqual(p, truth)
 
-        p = SqliteFsPurePath("asd", "qwe").name
+        p = (PurePath() / "asd").name
+        truth = "asd"
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd", "qwe").name
         truth = "qwe"
         self.assertEqual(p, truth)
 
+        p = (PurePath("asd") / "qwe").name
+        truth = "qwe"
+        self.assertEqual(p, truth)
+
+    def test_suffix(self):
+        p = PurePath().suffix
+        truth = ""
+        self.assertEqual(p, truth)
+
+        p = PurePath("").suffix
+        truth = ""
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd.").suffix
+        truth = ""
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd").suffix
+        truth = ""
+        self.assertEqual(p, truth)
+
+        p = PurePath(".asd").suffix
+        truth = ""
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd.qwe").suffix
+        truth = ".qwe"
+        self.assertEqual(p, truth)
+
+        p = PurePath(".asd.qwe").suffix
+        truth = ".qwe"
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd.qwe.zxc").suffix
+        truth = ".zxc"
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/").suffix
+        truth = ""
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/asd.").suffix
+        truth = ""
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/asd").suffix
+        truth = ""
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/.asd").suffix
+        truth = ""
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/asd.qwe").suffix
+        truth = ".qwe"
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/.asd.qwe").suffix
+        truth = ".qwe"
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/asd.qwe.zxc").suffix
+        truth = ".zxc"
+        self.assertEqual(p, truth)
+
+    def test_stem(self):
+        p = PurePath().stem
+        truth = ""
+        self.assertEqual(p, truth)
+
+        p = PurePath("").stem
+        truth = ""
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd.").stem
+        truth = "asd."
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd").stem
+        truth = "asd"
+        self.assertEqual(p, truth)
+
+        p = PurePath(".asd").stem
+        truth = ".asd"
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd.qwe").stem
+        truth = "asd"
+        self.assertEqual(p, truth)
+
+        p = PurePath(".asd.qwe").stem
+        truth = ".asd"
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd.qwe.zxc").stem
+        truth = "asd.qwe"
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/").stem
+        truth = "123"
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/asd.").stem
+        truth = "asd."
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/asd").stem
+        truth = "asd"
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/.asd").stem
+        truth = ".asd"
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/asd.qwe").stem
+        truth = "asd"
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/.asd.qwe").stem
+        truth = ".asd"
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/asd.qwe.zxc").stem
+        truth = "asd.qwe"
+        self.assertEqual(p, truth)
+
+    def test_suffixes(self):
+        p = PurePath().suffixes
+        truth = []
+        self.assertEqual(p, truth)
+
+        p = PurePath("").suffixes
+        truth = []
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd.").suffixes
+        truth = []
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd").suffixes
+        truth = []
+        self.assertEqual(p, truth)
+
+        p = PurePath(".asd").suffixes
+        truth = []
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd.qwe").suffixes
+        truth = [".qwe"]
+        self.assertEqual(p, truth)
+
+        p = PurePath(".asd.qwe").suffixes
+        truth = [".qwe"]
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd.qwe.zxc").suffixes
+        truth = [".qwe", ".zxc"]
+        self.assertEqual(p, truth)
+
+        p = PurePath("asd.qwe.zxc.").suffixes
+        truth = []
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/").suffixes
+        truth = []
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/asd.").suffixes
+        truth = []
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/asd").suffixes
+        truth = []
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/.asd").suffixes
+        truth = []
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/asd.qwe").suffixes
+        truth = [".qwe"]
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/.asd.qwe").suffixes
+        truth = [".qwe"]
+        self.assertEqual(p, truth)
+
+        p = PurePath("123/asd.qwe.zxc").suffixes
+        truth = [".qwe", ".zxc"]
+        self.assertEqual(p, truth)
+
     def test_with_name(self):
-        p = SqliteFsPurePath().with_name("asd")
-        truth = SqliteFsPurePath("asd")
+        with self.assertRaises(ValueError):
+            p = PurePath().with_name("asd")
+
+        with self.assertRaises(ValueError):
+            p = PurePath("").with_name("asd")
+
+        p = PurePath("asd").with_name("qwe")
+        truth = PurePath("qwe")
         self.assertEqual(p, truth)
 
-        p = SqliteFsPurePath("").with_name("asd")
-        truth = SqliteFsPurePath("asd")
+        p = PurePath("asd/").with_name("qwe")
+        truth = PurePath("qwe")
         self.assertEqual(p, truth)
 
-        p = SqliteFsPurePath("asd").with_name("asd")
-        truth = SqliteFsPurePath("asd")
-        self.assertEqual(p, truth)
-
-        p = SqliteFsPurePath("asd", "qwe").with_name("zxc")
-        truth = SqliteFsPurePath("asd", "zxc")
+        p = PurePath("asd", "qwe").with_name("zxc")
+        truth = PurePath("asd", "zxc")
         self.assertEqual(p, truth)
 
 
 class SqliteFsPathTest(TestCase):
     def test_repr(self):
-        with SqliteConnect(":memory:") as sqlite:
+        with PathFactory() as sqlite:
             p = sqlite.Path("s1-1")
-            self.assertEqual("SqliteFsPath('s1-1')", repr(p))
+            self.assertEqual(f"{p.__class__.__name__}('s1-1')", repr(p))
 
     def test_mkdir_is_file_dir(self):
-        with SqliteConnect(":memory:") as sqlite:
+        with PathFactory() as sqlite:
             p = sqlite.Path("s1-1")
 
             self.assertFalse(p.is_dir())
@@ -101,18 +373,24 @@ class SqliteFsPathTest(TestCase):
                 p.mkdir(parents=True, exist_ok=False)
 
     def test_read_write_bytes(self):
-        with SqliteConnect(":memory:") as sqlite:
+        with PathFactory() as sqlite:
             p = sqlite.Path("s1-1")
 
             with self.assertRaises(FileNotFoundError):
                 p.read_bytes()
 
+            p.write_bytes(b"")
+            self.assertEqual(len(sqlite), 1)
+            self.assertEqual(p.read_bytes(), b"")
             p.write_bytes(b"asd")
             self.assertEqual(len(sqlite), 1)
             self.assertEqual(p.read_bytes(), b"asd")
             p.write_bytes(b"qwe")
             self.assertEqual(len(sqlite), 1)
             self.assertEqual(p.read_bytes(), b"qwe")
+            p.write_bytes(b"")
+            self.assertEqual(len(sqlite), 1)
+            self.assertEqual(p.read_bytes(), b"")
 
             p = sqlite.Path("s1-1/s2-1")
             with self.assertRaises(FileNotFoundError):
@@ -122,7 +400,7 @@ class SqliteFsPathTest(TestCase):
             self.assertEqual(len(sqlite), 1)
 
     def test_read_write_bytes_mkdir(self):
-        with SqliteConnect(":memory:") as sqlite:
+        with PathFactory() as sqlite:
             p = sqlite.Path("s1-2")
             p.mkdir()
             self.assertEqual(len(sqlite), 1)
@@ -143,8 +421,32 @@ class SqliteFsPathTest(TestCase):
             self.assertTrue(p.is_file())
             self.assertFalse(p.is_dir())
 
+    def test_stat(self):
+        with PathFactory() as sqlite:
+            p = sqlite.Path("s1-1")
+            p.write_bytes(b"")
+            self.assertEqual(p.stat().st_size, 0)
+            p.write_bytes(b"asd")
+            self.assertEqual(p.stat().st_size, 3)
+            p.write_bytes(b"\x00\x01\x02")
+            self.assertEqual(p.stat().st_size, 3)
+            p.write_bytes(b"\xe4\xb8\xad\xe6\x96\x87")
+            self.assertEqual(p.stat().st_size, 6)
+
+            p = sqlite.Path("s1-2")
+            p.mkdir()
+            p = sqlite.Path("s1-2/s2-1")
+            p.write_bytes(b"")
+            self.assertEqual(p.stat().st_size, 0)
+            p.write_bytes(b"asd")
+            self.assertEqual(p.stat().st_size, 3)
+            p.write_bytes(b"\x00\x01\x02")
+            self.assertEqual(p.stat().st_size, 3)
+            p.write_bytes(b"\xe4\xb8\xad\xe6\x96\x87")
+            self.assertEqual(p.stat().st_size, 6)
+
     def test_iterdir(self):
-        with SqliteConnect(":memory:") as sqlite:
+        with PathFactory() as sqlite:
             truth = []
 
             basepath = sqlite.Path()
@@ -162,7 +464,7 @@ class SqliteFsPathTest(TestCase):
 
     @skip_not_implemented
     def test_open(self):
-        with SqliteConnect(":memory:") as sqlite:
+        with PathFactory() as sqlite:
             data = b"asd"
 
             p = sqlite.Path("s1-2")
@@ -171,7 +473,7 @@ class SqliteFsPathTest(TestCase):
                 self.assertEqual(fr.read(), data)
 
     def test_joinpath(self):
-        with SqliteConnect(":memory:") as sqlite:
+        with PathFactory() as sqlite:
             p1 = sqlite.Path("a/b")
             p2 = sqlite.Path("a") / "b"
             self.assertEqual(p1, p2)
@@ -183,6 +485,39 @@ class SqliteFsPathTest(TestCase):
             p1 = sqlite.Path("a/b/c")
             p2 = sqlite.Path("a").joinpath("b", "c")
             self.assertEqual(p1, p2)
+
+    def test_hardlink_to(self):
+        with PathFactory() as sqlite:
+            p1 = sqlite.Path("f1")
+            p1.write_bytes(b"")
+            self.assertEqual(p1.stat().st_nlink, 1)
+
+            p_dir = sqlite.Path("d1")
+            p_dir.mkdir()
+
+            p2 = sqlite.Path("f2")
+
+            with self.assertRaises(PermissionError):
+                p2.hardlink_to("d1")
+            with self.assertRaises(FileNotFoundError):
+                p2.hardlink_to("f3")
+
+            p2.hardlink_to("f1")
+            self.assertEqual(p1.stat().st_nlink, 2)
+            self.assertEqual(p2.stat().st_nlink, 2)
+
+            with self.assertRaises(FileExistsError):
+                p2.hardlink_to("f1")
+
+            with self.assertRaises(FileNotFoundError):
+                p2.hardlink_to("f3")
+
+            p3 = sqlite.Path("d2/f1")
+            with self.assertRaises(FileNotFoundError):
+                p3.hardlink_to("f1")
+
+            with self.assertRaises(FileExistsError):
+                p_dir.hardlink_to("f1")
 
 
 if __name__ == "__main__":

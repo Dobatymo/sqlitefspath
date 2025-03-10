@@ -35,6 +35,9 @@ lint.extend-select = [
   "B",
   "I",
 ]
+lint.ignore = [
+  "B011",
+]
 
 [tool.mypy]
 allow_redefinition = true
