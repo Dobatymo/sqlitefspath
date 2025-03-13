@@ -1,13 +1,16 @@
+import errno
 import os
 import sqlite3
 import sys
 from contextlib import contextmanager
 from itertools import chain
-from typing import Final, Iterator, List, NamedTuple, Optional, Tuple, Union
+from os import strerror
+from typing import Callable, Final, Iterator, List, NamedTuple, Optional, Tuple, Union
 
 from typing_extensions import Self
 
 ROOT_ID = 1
+DISABLE_CACHE = False
 
 
 class UnsetType:
@@ -19,7 +22,7 @@ UNSET: Final = UnsetType()
 
 class StatResult(NamedTuple):
     st_mode: int
-    st_ino: int = 0
+    st_ino: int
     st_dev: int = 0
     st_nlink: Optional[int] = None
     st_uid: Optional[int] = None
@@ -35,8 +38,6 @@ class StatResult(NamedTuple):
 
 class SqliteFsPurePath:
     __slots__ = ("segments",)
-
-    _file_id: Union[UnsetType, None, int]
 
     def __init__(self, *pathsegments: str) -> None:
         for segment in pathsegments:
@@ -186,6 +187,29 @@ class SqliteFsPurePath:
 class SqliteFsPath(SqliteFsPurePath):
     __slots__ = ("conn", "parent_id", "_node_id", "_file_id")
 
+    _node_id: Optional[int]
+    _file_id: Union[UnsetType, None, int]
+
+    def __init__(self, conn: sqlite3.Connection, *pathsegments: str) -> None:
+        super().__init__(*pathsegments)
+        self.conn = conn
+
+        self.parent_id = ROOT_ID
+
+        if DISABLE_CACHE:
+
+            def getter(value) -> Callable:
+                return lambda self: value
+
+            def setter(self, value) -> None:
+                pass
+
+            SqliteFsPath._node_id = property(getter(None), setter)  # type: ignore[assignment,misc]
+            SqliteFsPath._file_id = property(getter(UNSET), setter)  # type: ignore[assignment,misc]
+        else:
+            self._node_id = None
+            self._file_id = UNSET
+
     def with_segments(self, *pathsegments: str) -> Self:
         return type(self)(self.conn, *pathsegments)
 
@@ -204,47 +228,85 @@ class SqliteFsPath(SqliteFsPurePath):
             )
         res = cur.fetchone()
         if res is None:
-            raise FileNotFoundError(segment)
+            raise OSError(errno.ENOENT, strerror(errno.ENOENT), segment)
         node_id, file_id = res
         return node_id, file_id
 
-    def _get_file_id(self) -> Optional[int]:
-        if isinstance(self._file_id, UnsetType):
-            parent_id = self.parent_id
-            for segment in self.segments:
-                node_id, file_id = self._find_node(parent_id, segment)
-                parent_id = node_id
-            self._file_id = file_id
+    def _get_file_id_by_node_id(self, node_id: int) -> Optional[int]:
+        sql = "SELECT file_id FROM fs WHERE id = ?"
+        cur = self.conn.execute(sql, (node_id,))
+        res = cur.fetchone()
+        if res is None:
+            raise OSError(errno.ENOENT, strerror(errno.ENOENT), str(self))
+        (file_id,) = res
+        return file_id
 
-        return self._file_id
+    def _get_ids(self) -> Tuple[int, Optional[int]]:
+        node_id = self._node_id
+        file_id = self._file_id
 
-    def _insert_directory(self, segment: str, parent_id: int) -> int:
+        if isinstance(file_id, UnsetType):
+            if node_id is None:
+                parent_id = self.parent_id
+                for segment in self.segments:
+                    node_id, file_id = self._find_node(parent_id, segment)
+                    parent_id = node_id
+            else:
+                file_id = self._get_file_id_by_node_id(node_id)
+        assert node_id is not None
+        assert not isinstance(file_id, UnsetType)
+
+        self._node_id = node_id
+        self._file_id = file_id
+        return node_id, file_id
+
+    def _insert_directory(self, segment: str, parent_id: int) -> Tuple[int, None]:
         sql_insert = "INSERT INTO fs (name, parent_id, file_id) VALUES (?, ?, ?) RETURNING rowid"
+        file_id = None
         try:
-            cur = self.conn.execute(sql_insert, (segment, parent_id, None))
+            cur = self.conn.execute(sql_insert, (segment, parent_id, file_id))
             (node_id,) = cur.fetchone()
-            return node_id
+            return node_id, file_id
         except sqlite3.IntegrityError as e:
-            raise FileExistsError(segment) from e
+            raise OSError(errno.EEXIST, strerror(errno.EEXIST), segment) from e
 
-    def _insert_ignore_directory(self, segment: str, parent_id: int) -> int:
+    def _insert_ignore_directory(self, segment: str, parent_id: int) -> Tuple[int, None]:
+        """Returns a node_id, file_id tuple"""
+
         sql_insert_update = "INSERT INTO fs (name, parent_id, file_id) VALUES (?, ?, ?) ON CONFLICT DO UPDATE SET file_id = file_id RETURNING rowid, file_id"
         cur = self.conn.execute(sql_insert_update, (segment, parent_id, None))
         node_id, file_id = cur.fetchone()
         if file_id is not None:
-            raise FileExistsError(f"{segment} is a file")
-        return node_id
+            raise OSError(errno.EEXIST, strerror(errno.EEXIST), segment)
+        return node_id, file_id
 
     def _select_directory(self, segment: str, parent_id: int) -> int:
-        sql_select = "SELECT id FROM fs WHERE name = ? AND parent_id = ? AND file_id IS NULL"
-        cur = self.conn.execute(sql_select, (segment, parent_id))
+        sql = "SELECT id FROM fs WHERE name = ? AND parent_id = ? AND file_id IS NULL"
+        cur = self.conn.execute(sql, (segment, parent_id))
         result = cur.fetchone()
         if result is None:
-            raise FileNotFoundError(segment)
+            raise OSError(errno.ENOENT, strerror(errno.ENOENT), segment)
+        (node_id,) = result
+        return node_id
+
+    def _remove_directory_by_node_id(self, node_id: int) -> None:
+        sql = "DELETE FROM fs WHERE id = ? and file_id IS NULL RETURNING 1"
+        cur = self.conn.execute(sql, (node_id,))
+        result = cur.fetchone()
+        if result is None:
+            raise OSError(errno.ENOENT, strerror(errno.ENOENT), str(self))
+
+    def _remove_directory(self, segment: str, parent_id: int) -> int:
+        sql = "DELETE FROM fs WHERE name = ? AND parent_id = ? AND file_id IS NULL RETURNING rowid"
+        cur = self.conn.execute(sql, (segment, parent_id))
+        result = cur.fetchone()
+        if result is None:
+            raise OSError(errno.ENOENT, strerror(errno.ENOENT), segment)
         (node_id,) = result
         return node_id
 
     def _read_file_id(self, file_id: int) -> Tuple[int, bytes]:
+        assert isinstance(file_id, int)
         sql = "SELECT length(data), data FROM data WHERE file_id = ?"
         cur = self.conn.execute(sql, (file_id,))
         result = cur.fetchone()
@@ -260,18 +322,34 @@ class SqliteFsPath(SqliteFsPurePath):
         filesize, link_count = result
         return filesize, link_count
 
+    def _read_file_by_node_id(self, node_id: int) -> Tuple[int, bytes, int]:
+        sql = "SELECT file_id FROM fs WHERE id = ?"
+        cur = self.conn.execute(sql, (node_id,))
+        result = cur.fetchone()
+
+        if result is None:
+            raise OSError(errno.ENOENT, strerror(errno.ENOENT), str(self))
+
+        (file_id,) = result
+
+        if file_id is None:
+            raise OSError(errno.EACCES, strerror(errno.EACCES), str(self))
+
+        filesize, data = self._read_file_id(file_id)
+        return filesize, data, file_id
+
     def _read_file_existing(self, segment: str, parent_id: int) -> Tuple[int, bytes, int]:
         sql = "SELECT file_id FROM fs WHERE name = ? and parent_id = ?"
         cur = self.conn.execute(sql, (segment, parent_id))
         result = cur.fetchone()
 
         if result is None:
-            raise FileNotFoundError(segment)
+            raise OSError(errno.ENOENT, strerror(errno.ENOENT), segment)
 
         (file_id,) = result
 
         if file_id is None:
-            raise PermissionError(f"{segment} is a directory")
+            raise OSError(errno.EACCES, strerror(errno.EACCES), str(self))
 
         filesize, data = self._read_file_id(file_id)
         return filesize, data, file_id
@@ -279,6 +357,17 @@ class SqliteFsPath(SqliteFsPurePath):
     def _insert_file_overwrite_id(self, data: bytes, file_id: int) -> None:
         sql = "UPDATE data SET data = ? WHERE file_id = ?"
         self.conn.execute(sql, (data, file_id))
+
+    def _insert_file_by_node_id(self, node_id: int, data: bytes) -> Optional[int]:
+        sql = "SELECT file_id FROM fs WHERE id = ?"
+        cur = self.conn.execute(sql, (node_id,))
+        result = cur.fetchone()
+        assert result is not None
+        (file_id,) = result
+        if file_id is None:
+            return file_id
+        self._insert_file_overwrite_id(data, file_id)
+        return file_id
 
     def _insert_file_overwrite(self, segment: str, parent_id: int, data: bytes) -> Tuple[int, Optional[int]]:
         """Returns node_id, file_id tuple.
@@ -314,7 +403,7 @@ class SqliteFsPath(SqliteFsPurePath):
             assert result is not None
             (node_id,) = result
         except sqlite3.IntegrityError as e:
-            raise FileExistsError(segment) from e
+            raise OSError(errno.EEXIST, strerror(errno.EEXIST), segment) from e
 
         sql = "UPDATE data SET link_count = link_count + 1 WHERE file_id = ? RETURNING link_count"
         cur = self.conn.execute(sql, (file_id,))
@@ -324,14 +413,6 @@ class SqliteFsPath(SqliteFsPurePath):
         return node_id, link_count
 
     # methods
-
-    def __init__(self, conn: sqlite3.Connection, *pathsegments: str) -> None:
-        super().__init__(*pathsegments)
-        self.conn = conn
-
-        self.parent_id = ROOT_ID
-        self._node_id: Optional[int] = None
-        self._file_id = UNSET
 
     def __str__(self) -> str:
         return "/".join(self.segments)
@@ -389,22 +470,24 @@ class SqliteFsPath(SqliteFsPurePath):
     # Querying file type and status
 
     def stat(self, *, follow_symlinks: bool = True) -> StatResult:
-        file_id = self._get_file_id()
+        node_id, file_id = self._get_ids()
         if file_id is None:
             st_mode = 0o040000
+            st_ino = node_id
             st_size = None
             st_nlink = 1
         else:
             st_mode = 0o100000
+            st_ino = node_id
             st_size, st_nlink = self._read_file_meta_id(file_id)
-        return StatResult(st_mode=st_mode, st_nlink=st_nlink, st_size=st_size)
+        return StatResult(st_mode=st_mode, st_ino=st_ino, st_nlink=st_nlink, st_size=st_size)
 
     def lstat(self) -> os.stat_result:
         raise NotImplementedError
 
     def exists(self, *, follow_symlinks: bool = True) -> bool:
         try:
-            self._get_file_id()
+            self._get_ids()
         except FileNotFoundError:
             return False
 
@@ -412,7 +495,7 @@ class SqliteFsPath(SqliteFsPurePath):
 
     def is_file(self, *, follow_symlinks: bool = True) -> bool:
         try:
-            file_id = self._get_file_id()
+            node_id, file_id = self._get_ids()
         except FileNotFoundError:
             return False
 
@@ -420,7 +503,7 @@ class SqliteFsPath(SqliteFsPurePath):
 
     def is_dir(self, *, follow_symlinks: bool = True) -> bool:
         try:
-            file_id = self._get_file_id()
+            node_id, file_id = self._get_ids()
         except FileNotFoundError:
             return False
 
@@ -465,10 +548,10 @@ class SqliteFsPath(SqliteFsPurePath):
             raise NotImplementedError
 
         if mode == "rb":  # type: ignore[unreachable,unused-ignore]
-            file_id = self._get_file_id()
+            node_id, file_id = self._get_ids()
 
             if file_id is None:
-                raise PermissionError(str(self))
+                raise OSError(errno.EACCES, strerror(errno.EACCES), str(self))
 
             with self.conn.blobopen("data", "data", file_id, readonly=True) as blob:
                 yield blob
@@ -481,20 +564,26 @@ class SqliteFsPath(SqliteFsPurePath):
         raise NotImplementedError
 
     def read_bytes(self) -> bytes:
-        if isinstance(self._file_id, UnsetType):
-            parent_id = self.parent_id
+        node_id = self._node_id
+        file_id = self._file_id
 
-            for segment in self.segments[:-1]:
-                parent_id = self._select_directory(segment, parent_id)
+        if isinstance(file_id, UnsetType):
+            if node_id is None:
+                parent_id = self.parent_id
 
-            segment = self.segments[-1]
-            filesize, data, file_id = self._read_file_existing(segment, parent_id)
+                for segment in self.segments[:-1]:
+                    parent_id = self._select_directory(segment, parent_id)
+
+                segment = self.segments[-1]
+                filesize, data, file_id = self._read_file_existing(segment, parent_id)
+            else:
+                filesize, data, file_id = self._read_file_by_node_id(node_id)
             self._file_id = file_id
 
-        if self._file_id is None:  # is a directory
-            raise PermissionError(str(self))
+        if file_id is None:  # is a directory
+            raise OSError(errno.EACCES, strerror(errno.EACCES), str(self))
 
-        filesize, data = self._read_file_id(self._file_id)
+        filesize, data = self._read_file_id(file_id)
 
         return data
 
@@ -504,34 +593,53 @@ class SqliteFsPath(SqliteFsPurePath):
         raise NotImplementedError
 
     def write_bytes(self, data: bytes) -> None:
-        if self._file_id is None:
-            raise PermissionError(str(self))
-        elif isinstance(self._file_id, int):
-            self._insert_file_overwrite_id(data, self._file_id)
-        else:
-            parent_id = self.parent_id
+        node_id = self._node_id
+        file_id = self._file_id
 
-            for segment in self.segments[:-1]:
-                parent_id = self._select_directory(segment, parent_id)
+        if file_id is None:
+            raise OSError(errno.EACCES, strerror(errno.EACCES), str(self))
 
-            segment = self.segments[-1]
-            self._node_id, self._file_id = self._insert_file_overwrite(segment, parent_id, data)
-            if self._file_id is None:
-                raise PermissionError(segment)
-            self.conn.commit()
+        elif isinstance(file_id, int):
+            with self.conn:
+                self._insert_file_overwrite_id(data, file_id)
+
+        else:  # file_id is UNSET
+            with self.conn:
+                if node_id is None:
+                    parent_id = self.parent_id
+
+                    for segment in self.segments[:-1]:
+                        parent_id = self._select_directory(segment, parent_id)
+
+                    segment = self.segments[-1]
+                    node_id, file_id = self._insert_file_overwrite(segment, parent_id, data)
+                    self._node_id = node_id
+                else:
+                    file_id = self._insert_file_by_node_id(node_id, data)
+
+            self._file_id = file_id
+
+            if file_id is None:
+                raise OSError(errno.EACCES, strerror(errno.EACCES), str(self))
 
     # Reading directories
 
     def iterdir(self) -> "Iterator[SqliteFsPath]":
-        parent_id = self.parent_id
+        node_id = self._node_id
 
-        for segment in self.segments:
-            parent_id = self._select_directory(segment, parent_id)
+        if node_id is None:
+            parent_id = self.parent_id
+            for segment in self.segments:
+                parent_id = self._select_directory(segment, parent_id)
+            node_id = parent_id
+            self._node_id = node_id
 
         sql = "SELECT id, name, file_id FROM fs WHERE parent_id = ?"
-        cur = self.conn.execute(sql, (parent_id,))
-        for node_id, name, file_id in cur:
-            yield SqliteFsPath.with_meta(self.conn, *self.segments, name, node_id=node_id, file_id=file_id)
+        cur = self.conn.execute(sql, (node_id,))
+        for child_node_id, child_name, child_file_id in cur:
+            yield SqliteFsPath.with_meta(
+                self.conn, *self.segments, child_name, node_id=child_node_id, file_id=child_file_id
+            )
 
     def glob(
         self, pattern, *, case_sensitive: Optional[bool] = None, recurse_symlinks: bool = False
@@ -554,23 +662,30 @@ class SqliteFsPath(SqliteFsPurePath):
         raise NotImplementedError
 
     def mkdir(self, mode: int = 0o777, parents: bool = False, exist_ok: bool = False) -> None:
+        node_id = self._node_id
+
+        if node_id is not None and not exist_ok:
+            raise OSError(errno.EEXIST, strerror(errno.EEXIST), str(self))
+
         parent_id = self.parent_id
 
-        if parents:
-            for segment in self.segments[:-1]:
-                parent_id = self._insert_ignore_directory(segment, parent_id)
-        else:
-            for segment in self.segments[:-1]:
-                parent_id = self._select_directory(segment, parent_id)
+        with self.conn:
+            if parents:
+                for segment in self.segments[:-1]:
+                    parent_id, _file_id = self._insert_ignore_directory(segment, parent_id)
+            else:
+                for segment in self.segments[:-1]:
+                    parent_id = self._select_directory(segment, parent_id)
 
-        segment = self.segments[-1]
+            segment = self.segments[-1]
 
-        if exist_ok:
-            parent_id = self._insert_ignore_directory(segment, parent_id)
-        else:
-            parent_id = self._insert_directory(segment, parent_id)
+            if exist_ok:
+                node_id, file_id = self._insert_ignore_directory(segment, parent_id)
+            else:
+                node_id, file_id = self._insert_directory(segment, parent_id)
 
-        self.conn.commit()
+        self._node_id = node_id
+        self._file_id = file_id
 
     def symlink_to(self, target: str, target_is_directory: bool = False) -> None:
         raise NotImplementedError
@@ -584,19 +699,24 @@ class SqliteFsPath(SqliteFsPurePath):
         - if self already exists, but target does not: FileNotFoundError
         """
 
+        file_id = self._file_id
+
         parent_id = self.parent_id
         for segment in self.segments[:-1]:
             parent_id = self._select_directory(segment, parent_id)
 
-        target_file_id = SqliteFsPath(self.conn, target)._get_file_id()
+        target_node_id, target_file_id = SqliteFsPath(self.conn, target)._get_ids()
         if target_file_id is None:
-            raise PermissionError(target)
+            raise OSError(errno.EACCES, strerror(errno.EACCES), target)
 
-        if isinstance(self._file_id, int) or self._file_id is None:
-            raise FileExistsError(str(self))
+        if isinstance(file_id, int) or file_id is None:
+            raise OSError(errno.EEXIST, strerror(errno.EEXIST), str(self))
 
         segment = self.segments[-1]
-        self._node_id, link_count = self._insert_hardlink_new(segment, parent_id, target_file_id)
+        node_id, link_count = self._insert_hardlink_new(segment, parent_id, target_file_id)
+
+        self._node_id = node_id
+        self._file_id = target_file_id
 
     # Renaming and deleting
 
@@ -607,10 +727,45 @@ class SqliteFsPath(SqliteFsPurePath):
         raise NotImplementedError
 
     def unlink(self, missing_ok: bool = False) -> None:
-        raise NotImplementedError
+        try:
+            node_id, file_id = self._get_ids()
+        except FileNotFoundError:
+            if missing_ok:
+                return
+            raise
+
+        if file_id is None:
+            raise OSError(errno.EACCES, strerror(errno.EACCES), str(self))
+
+        with self.conn:
+            # todo: use executescript
+            sql = "DELETE FROM fs WHERE id = ?"
+            self.conn.execute(sql, (node_id,))
+
+            sql = "UPDATE data SET link_count = link_count - 1 WHERE file_id = ?"
+            self.conn.execute(sql, (file_id,))
+
+        self._node_id = None
+        self._file_id = UNSET
 
     def rmdir(self) -> None:
-        raise NotImplementedError
+        node_id = self._node_id
+        file_id = self._file_id
+
+        if node_id is not None:
+            if file_id is None:
+                raise OSError(errno.EACCES, strerror(errno.EACCES), str(self))
+            self._remove_directory_by_node_id(node_id)
+        else:
+            parent_id = self.parent_id
+            for segment in self.segments[:-1]:
+                parent_id = self._select_directory(segment, parent_id)
+
+            segment = self.segments[-1]
+            self._remove_directory(segment, parent_id)
+
+        self._node_id = None
+        self._file_id = UNSET
 
     # Permissions and ownership
 
@@ -635,8 +790,9 @@ class SqliteConnect:
             raise RuntimeError("SQLite version 3.35.0 or higher is required")
 
         self.conn = sqlite3.connect(database, **kwargs)
-        self.clear()
-        sql = """CREATE TABLE IF NOT EXISTS fs (
+
+        with self.conn:
+            sql = """CREATE TABLE IF NOT EXISTS fs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     parent_id INTEGER,  -- NULL for root entry
@@ -644,28 +800,39 @@ class SqliteConnect:
     FOREIGN KEY (parent_id) REFERENCES files(id)
     UNIQUE(name, parent_id)
 )"""
-        if sqlite_version >= (3, 37, 0):
-            sql += " STRICT"
+            if sqlite_version >= (3, 37, 0):
+                sql += " STRICT"
 
-        self.conn.execute(sql)
-        cur = self.conn.execute(
-            "INSERT INTO fs (id, name, parent_id) VALUES (?, ?, ?) RETURNING rowid",
-            (ROOT_ID, "root", None),
-        )
-        (rowid,) = cur.fetchone()
-        assert rowid == ROOT_ID, rowid
+            self.conn.execute(sql)
+            try:
+                cur = self.conn.execute(
+                    "INSERT INTO fs (id, name, parent_id) VALUES (?, ?, ?) RETURNING rowid",
+                    (ROOT_ID, "root", None),
+                )
+                (node_id,) = cur.fetchone()
+                assert node_id == ROOT_ID, node_id
+            except sqlite3.IntegrityError:
+                pass  # root already exists
 
-        sql = """CREATE TABLE IF NOT EXISTS data (
+            sql = """CREATE TABLE IF NOT EXISTS data (
     file_id INTEGER PRIMARY KEY,
     link_count INTEGER,
     data BLOB,
     FOREIGN KEY (file_id) REFERENCES files(file_id)
 )"""
-        if sqlite_version >= (3, 37, 0):
-            sql += " STRICT"
+            if sqlite_version >= (3, 37, 0):
+                sql += " STRICT"
 
-        self.conn.execute(sql)
-        self.conn.commit()
+            self.conn.execute(sql)
+
+            sql = """CREATE TRIGGER IF NOT EXISTS unlink_unreferenced
+AFTER UPDATE OF link_count ON data
+FOR EACH ROW
+WHEN NEW.link_count = 0
+BEGIN
+    DELETE FROM data WHERE file_id = NEW.file_id;
+END"""
+            self.conn.execute(sql)
 
     def __enter__(self) -> "SqliteConnect":
         return self

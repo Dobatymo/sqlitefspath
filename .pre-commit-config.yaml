@@ -13,6 +13,8 @@ repos:
   - id: detect-private-key
   - id: end-of-file-fixer
   - id: mixed-line-ending
+  - id: pretty-format-json
+    args: [--autofix, --no-ensure-ascii]
   - id: requirements-txt-fixer
   - id: trailing-whitespace
     args: [--markdown-linebreak-ext=md]

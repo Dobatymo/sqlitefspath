@@ -1,12 +1,16 @@
+import errno
 import os
 import shutil
 from pathlib import Path, PurePosixPath
-from typing import Callable
+from tempfile import mkdtemp
+from typing import Callable, Sequence, Tuple, Union
 from unittest import TestCase
 
+from sqlitefspath import sqlitefspath
 from sqlitefspath.sqlitefspath import SqliteConnect, SqliteFsPurePath
 
-USE_PATHLIB = False
+USE_PATHLIB = bool(os.getenv("SQLITEFSPATHTEST_USE_PATHLIB", ""))
+sqlitefspath.DISABLE_CACHE = bool(os.getenv("SQLITEFSPATHTEST_DISABLE_CACHE", ""))
 
 
 def skip_not_implemented(func: Callable) -> Callable:
@@ -62,6 +66,26 @@ def PathFactory():
         return PathlibBase("tmp")
     else:
         return SqliteConnect(":memory:")
+
+
+class AssertRaisesOSError:
+    def __init__(self, instance, errno: Union[int, Sequence[int]]) -> None:
+        self.instance = instance
+        if isinstance(errno, int):
+            self.errno: Tuple[int, ...] = (errno,)
+        else:
+            self.errno = tuple(errno)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if isinstance(exc_value, OSError):
+            if exc_value.errno in self.errno:
+                return True
+
+            self.instance.fail(f"OSError was raised with errno={exc_value.errno}")
+        self.instance.fail("OSError was not raised")
 
 
 class SqliteFsPurePathTest(TestCase):
@@ -348,7 +372,7 @@ class SqliteFsPathTest(TestCase):
             self.assertFalse(p.is_dir())
             self.assertFalse(p.is_file())
             p.mkdir()
-            with self.assertRaises(FileExistsError):
+            with AssertRaisesOSError(self, errno.EEXIST):
                 p.mkdir(exist_ok=False)
             self.assertTrue(p.is_dir())
             self.assertFalse(p.is_file())
@@ -357,7 +381,7 @@ class SqliteFsPathTest(TestCase):
             self.assertFalse(p.is_dir())
             self.assertFalse(p.is_file())
             p.mkdir()
-            with self.assertRaises(FileExistsError):
+            with AssertRaisesOSError(self, errno.EEXIST):
                 p.mkdir(exist_ok=False)
             p.mkdir(exist_ok=True)
             self.assertTrue(p.is_dir())
@@ -366,17 +390,17 @@ class SqliteFsPathTest(TestCase):
             p = sqlite.Path("s1-2/s2-2")
             self.assertFalse(p.is_dir())
 
-            with self.assertRaises(FileNotFoundError):
+            with AssertRaisesOSError(self, errno.ENOENT):
                 p.mkdir(parents=False)
             p.mkdir(parents=True, exist_ok=False)
-            with self.assertRaises(FileExistsError):
+            with AssertRaisesOSError(self, errno.EEXIST):
                 p.mkdir(parents=True, exist_ok=False)
 
     def test_read_write_bytes(self):
         with PathFactory() as sqlite:
             p = sqlite.Path("s1-1")
 
-            with self.assertRaises(FileNotFoundError):
+            with AssertRaisesOSError(self, errno.ENOENT):
                 p.read_bytes()
 
             p.write_bytes(b"")
@@ -393,9 +417,9 @@ class SqliteFsPathTest(TestCase):
             self.assertEqual(p.read_bytes(), b"")
 
             p = sqlite.Path("s1-1/s2-1")
-            with self.assertRaises(FileNotFoundError):
+            with AssertRaisesOSError(self, (errno.ENOENT, errno.ENOTDIR)):  # windows, linux
                 p.read_bytes()
-            with self.assertRaises(FileNotFoundError):
+            with AssertRaisesOSError(self, (errno.ENOENT, errno.ENOTDIR)):  # windows, linux
                 p.write_bytes(b"asd")
             self.assertEqual(len(sqlite), 1)
 
@@ -404,16 +428,16 @@ class SqliteFsPathTest(TestCase):
             p = sqlite.Path("s1-2")
             p.mkdir()
             self.assertEqual(len(sqlite), 1)
-            with self.assertRaises(PermissionError):
+            with AssertRaisesOSError(self, (errno.EACCES, errno.EISDIR)):  # windows, linux
                 p.read_bytes()
-            with self.assertRaises(PermissionError):
+            with AssertRaisesOSError(self, (errno.EACCES, errno.EISDIR)):  # windows, linux
                 p.write_bytes(b"asd")
             self.assertEqual(len(sqlite), 1)
             self.assertFalse(p.is_file())
             self.assertTrue(p.is_dir())
 
             p = sqlite.Path("s1-2/s2-1")
-            with self.assertRaises(FileNotFoundError):
+            with AssertRaisesOSError(self, errno.ENOENT):
                 p.read_bytes()
             p.write_bytes(b"asd")
             self.assertEqual(len(sqlite), 2)
@@ -497,27 +521,76 @@ class SqliteFsPathTest(TestCase):
 
             p2 = sqlite.Path("f2")
 
-            with self.assertRaises(PermissionError):
+            with AssertRaisesOSError(self, (errno.EACCES, errno.EPERM)):  # windows, linux
                 p2.hardlink_to("d1")
-            with self.assertRaises(FileNotFoundError):
+            with AssertRaisesOSError(self, errno.ENOENT):
                 p2.hardlink_to("f3")
 
             p2.hardlink_to("f1")
             self.assertEqual(p1.stat().st_nlink, 2)
             self.assertEqual(p2.stat().st_nlink, 2)
 
-            with self.assertRaises(FileExistsError):
+            with AssertRaisesOSError(self, errno.EEXIST):
                 p2.hardlink_to("f1")
 
-            with self.assertRaises(FileNotFoundError):
+            with AssertRaisesOSError(self, errno.ENOENT):
                 p2.hardlink_to("f3")
 
             p3 = sqlite.Path("d2/f1")
-            with self.assertRaises(FileNotFoundError):
+            with AssertRaisesOSError(self, errno.ENOENT):
                 p3.hardlink_to("f1")
 
-            with self.assertRaises(FileExistsError):
+            with AssertRaisesOSError(self, errno.EEXIST):
                 p_dir.hardlink_to("f1")
+
+    def test_unlink(self):
+        with PathFactory() as sqlite:
+            p = sqlite.Path("f1")
+            with AssertRaisesOSError(self, errno.ENOENT):
+                p.unlink()
+
+            p.write_bytes(b"")
+            p.unlink()
+            self.assertFalse(p.exists())
+
+            p1 = sqlite.Path("f1")
+            p1.write_bytes(b"")
+            p2 = sqlite.Path("f2")
+            p2.hardlink_to("f1")
+            self.assertEqual(p1.stat().st_nlink, 2)
+            self.assertEqual(p2.stat().st_nlink, 2)
+
+            p2.unlink()
+            self.assertEqual(p1.stat().st_nlink, 1)
+
+            p1.unlink()
+            with AssertRaisesOSError(self, errno.ENOENT):
+                p1.unlink()
+            p1.unlink(missing_ok=True)
+
+            p = sqlite.Path("f1")
+            p.mkdir()
+            with AssertRaisesOSError(self, (errno.EACCES, errno.EISDIR, errno.EPERM)):  # windows, linux, macos
+                p.unlink()
+
+
+if not USE_PATHLIB:
+
+    class SqliteFsPathFileTest(TestCase):
+        def test_repeat_open(self):
+            path = Path(mkdtemp(), "tmp.sqlite")
+
+            try:
+                with SqliteConnect(path) as sqlite:
+                    p = sqlite.Path("f1")
+                    p.write_bytes(b"")
+
+                with SqliteConnect(path) as sqlite:
+                    p = sqlite.Path("f1")
+                    self.assertTrue(p.exists())
+            finally:
+                path.unlink()
+                path.parent.rmdir()
 
 
 if __name__ == "__main__":

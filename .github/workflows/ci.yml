@@ -35,6 +35,17 @@ jobs:
     - name: Run tests
       run: |
         python -m pytest
+    - name: Run tests (without cache)
+      env:
+        SQLITEFSPATHTEST_DISABLE_CACHE: 'true'
+      run: |
+        python -m pytest
+    - name: Run tests (using pathlib)
+      if: ${{ matrix.python-version == '3.12' }}
+      env:
+        SQLITEFSPATHTEST_USE_PATHLIB: 'true'
+      run: |
+        python -m pytest
 
   deploy:
     needs: test
